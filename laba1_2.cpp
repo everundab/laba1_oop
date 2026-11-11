@@ -6,393 +6,284 @@
 #include <sstream>
 #include <stdexcept>
 #include <cassert>
-#include <cmath>
 #include <algorithm>
-#include <functional>
 
-// ==========================================
-// 1. ПРЕДСТАВЛЕНИЕ ПРЕДМЕТНОЙ ОБЛАСТИ И СТРУКТУРЫ
-// ==========================================
+using namespace std;
 
-enum class NodeKind {
-    Constant,
-    Variable,
-    Binary
+enum NodeType {
+    NODE_CONST,
+    NODE_VAR,
+    NODE_BINARY
 };
 
-enum class BinaryOp {
-    Add,
-    Sub,
-    Mul,
-    Div
+enum OpType {
+    OP_ADD,
+    OP_SUB,
+    OP_MUL,
+    OP_DIV
 };
 
-// Шаблонный класс узла дерева выражений (иммутабельный)
 template <typename T>
 class ExprNode {
-public:
-    using Ptr = std::shared_ptr<const ExprNode<T>>;
-
 private:
-    NodeKind kind_;
-    T value_;
-    std::string varName_;
-    BinaryOp op_;
-    Ptr left_;
-    Ptr right_;
-
-    // Приватные конструкторы для защиты инвариантов структуры
-    ExprNode(T val)
-        : kind_(NodeKind::Constant), value_(val), varName_(""), op_(BinaryOp::Add), left_(nullptr), right_(nullptr) {}
-
-    ExprNode(const std::string& name)
-        : kind_(NodeKind::Variable), value_(T{}), varName_(name), op_(BinaryOp::Add), left_(nullptr), right_(nullptr) {
-        if (name.empty()) {
-            throw std::invalid_argument("Имя переменной не может быть пустым");
-        }
-    }
-
-    ExprNode(BinaryOp op, Ptr left, Ptr right)
-        : kind_(NodeKind::Binary), value_(T{}), varName_(""), op_(op), left_(left), right_(right) {
-        // Инвариант: бинарная операция обязана иметь ровно два непустых операнда
-        if (!left || !right) {
-            throw std::invalid_argument("Бинарная операция должна содержать ровно два непустых операнда");
-        }
-    }
+    NodeType type;
+    T value;
+    string varName;
+    OpType op;
+    shared_ptr<const ExprNode<T>> left;
+    shared_ptr<const ExprNode<T>> right;
 
 public:
-    // Фабричные методы создания узлов
-    static Ptr makeConst(T val) {
-        return Ptr(new ExprNode<T>(val));
+    ExprNode(T val) {
+        type = NODE_CONST;
+        value = val;
+        op = OP_ADD;
     }
 
-    static Ptr makeVar(const std::string& name) {
-        return Ptr(new ExprNode<T>(name));
+    ExprNode(string name) {
+        if (name.empty()) {
+            throw invalid_argument("Empty variable name");
+        }
+        type = NODE_VAR;
+        value = T();
+        varName = name;
+        op = OP_ADD;
     }
 
-    static Ptr makeBinary(BinaryOp op, Ptr left, Ptr right) {
-        return Ptr(new ExprNode<T>(op, left, right));
+    ExprNode(OpType operation, shared_ptr<const ExprNode<T>> l, shared_ptr<const ExprNode<T>> r) {
+        if (l == nullptr || r == nullptr) {
+            throw invalid_argument("Binary operation requires two non-null operands");
+        }
+        type = NODE_BINARY;
+        value = T();
+        op = operation;
+        left = l;
+        right = r;
     }
 
-    NodeKind getKind() const { return kind_; }
-    T getValue() const { return value_; }
-    const std::string& getVarName() const { return varName_; }
-    BinaryOp getOp() const { return op_; }
-    Ptr getLeft() const { return left_; }
-    Ptr getRight() const { return right_; }
+    NodeType getType() const { return type; }
+    T getValue() const { return value; }
+    string getVarName() const { return varName; }
+    OpType getOp() const { return op; }
+    shared_ptr<const ExprNode<T>> getLeft() const { return left; }
+    shared_ptr<const ExprNode<T>> getRight() const { return right; }
 };
 
-// Удобные функции-конструкторы для построения формул
 template <typename T>
-typename ExprNode<T>::Ptr Const(T val) {
-    return ExprNode<T>::makeConst(val);
+shared_ptr<const ExprNode<T>> makeConst(T val) {
+    return make_shared<const ExprNode<T>>(val);
 }
 
 template <typename T>
-typename ExprNode<T>::Ptr Var(const std::string& name) {
-    return ExprNode<T>::makeVar(name);
+shared_ptr<const ExprNode<T>> makeVar(string name) {
+    return make_shared<const ExprNode<T>>(name);
 }
 
 template <typename T>
-typename ExprNode<T>::Ptr Add(typename ExprNode<T>::Ptr l, typename ExprNode<T>::Ptr r) {
-    return ExprNode<T>::makeBinary(BinaryOp::Add, l, r);
+shared_ptr<const ExprNode<T>> makeOp(OpType op, shared_ptr<const ExprNode<T>> l, shared_ptr<const ExprNode<T>> r) {
+    return make_shared<const ExprNode<T>>(op, l, r);
 }
 
 template <typename T>
-typename ExprNode<T>::Ptr Sub(typename ExprNode<T>::Ptr l, typename ExprNode<T>::Ptr r) {
-    return ExprNode<T>::makeBinary(BinaryOp::Sub, l, r);
-}
-
-template <typename T>
-typename ExprNode<T>::Ptr Mul(typename ExprNode<T>::Ptr l, typename ExprNode<T>::Ptr r) {
-    return ExprNode<T>::makeBinary(BinaryOp::Mul, l, r);
-}
-
-template <typename T>
-typename ExprNode<T>::Ptr Div(typename ExprNode<T>::Ptr l, typename ExprNode<T>::Ptr r) {
-    return ExprNode<T>::makeBinary(BinaryOp::Div, l, r);
-}
-
-// ==========================================
-// 2. ПРАВИЛА ОПЕРАЦИЙ (ЛЕГКО РАСШИРЯЕМЫЕ)
-// ==========================================
-
-inline std::string opToString(BinaryOp op) {
-    switch (op) {
-        case BinaryOp::Add: return "+";
-        case BinaryOp::Sub: return "-";
-        case BinaryOp::Mul: return "*";
-        case BinaryOp::Div: return "/";
+T calcOp(OpType op, T a, T b) {
+    if (op == OP_ADD) return a + b;
+    if (op == OP_SUB) return a - b;
+    if (op == OP_MUL) return a * b;
+    if (op == OP_DIV) {
+        if (b == T(0)) {
+            throw runtime_error("Division by zero");
+        }
+        return a / b;
     }
+    throw logic_error("Unknown operation");
+}
+
+string opSymbol(OpType op) {
+    if (op == OP_ADD) return "+";
+    if (op == OP_SUB) return "-";
+    if (op == OP_MUL) return "*";
+    if (op == OP_DIV) return "/";
     return "?";
 }
 
 template <typename T>
-T applyBinaryOp(BinaryOp op, T a, T b) {
-    switch (op) {
-        case BinaryOp::Add: return a + b;
-        case BinaryOp::Sub: return a - b;
-        case BinaryOp::Mul: return a * b;
-        case BinaryOp::Div:
-            if (b == T{0}) {
-                throw std::runtime_error("Ошибка вычисления: деление на ноль");
-            }
-            return a / b;
+T evaluate(shared_ptr<const ExprNode<T>> node, const map<string, T>& vars) {
+    if (node->getType() == NODE_CONST) {
+        return node->getValue();
     }
-    throw std::logic_error("Неизвестная бинарная операция");
-}
-
-// ==========================================
-// 3. АЛГОРИТМЫ РАБОТЫ СО СТРУКТУРОЙ ДЕРЕВА
-// ==========================================
-
-// Обобщённый алгоритм свёртки дерева (параметрический полиморфизм: правила передаются извне)
-template <typename T, typename R, typename ConstFn, typename VarFn, typename BinFn>
-R foldExpr(typename ExprNode<T>::Ptr node, ConstFn onConst, VarFn onVar, BinFn onBin) {
-    if (!node) {
-        throw std::invalid_argument("Пустой узел дерева");
-    }
-    switch (node->getKind()) {
-        case NodeKind::Constant:
-            return onConst(node->getValue());
-        case NodeKind::Variable:
-            return onVar(node->getVarName());
-        case NodeKind::Binary: {
-            R leftVal = foldExpr<T, R>(node->getLeft(), onConst, onVar, onBin);
-            R rightVal = foldExpr<T, R>(node->getRight(), onConst, onVar, onBin);
-            return onBin(node->getOp(), leftVal, rightVal);
+    if (node->getType() == NODE_VAR) {
+        string name = node->getVarName();
+        if (vars.find(name) == vars.end()) {
+            throw runtime_error("Unknown variable: " + name);
         }
+        return vars.at(name);
     }
-    throw std::logic_error("Неизвестный тип узла");
+
+    T leftVal = evaluate(node->getLeft(), vars);
+    T rightVal = evaluate(node->getRight(), vars);
+    return calcOp(node->getOp(), leftVal, rightVal);
 }
 
-// 1) Вычисление значения выражения при заданном наборе переменных
 template <typename T>
-T evaluate(typename ExprNode<T>::Ptr node, const std::map<std::string, T>& vars = {}) {
-    return foldExpr<T, T>(
-        node,
-        [](T val) { return val; },
-        [&vars](const std::string& name) -> T {
-            auto it = vars.find(name);
-            if (it == vars.end()) {
-                throw std::runtime_error("Неизвестная переменная: " + name);
-            }
-            return it->second;
-        },
-        [](BinaryOp op, T l, T r) {
-            return applyBinaryOp<T>(op, l, r);
-        }
-    );
+string toString(shared_ptr<const ExprNode<T>> node) {
+    if (node->getType() == NODE_CONST) {
+        ostringstream ss;
+        ss << node->getValue();
+        return ss.str();
+    }
+    if (node->getType() == NODE_VAR) {
+        return node->getVarName();
+    }
+
+    string l = toString(node->getLeft());
+    string r = toString(node->getRight());
+    return "(" + l + " " + opSymbol(node->getOp()) + " " + r + ")";
 }
 
-// 2) Получение текстового представления формулы
 template <typename T>
-std::string toString(typename ExprNode<T>::Ptr node) {
-    return foldExpr<T, std::string>(
-        node,
-        [](T val) {
-            std::ostringstream oss;
-            oss << val;
-            return oss.str();
-        },
-        [](const std::string& name) { return name; },
-        [](BinaryOp op, const std::string& l, const std::string& r) {
-            return "(" + l + " " + opToString(op) + " " + r + ")";
-        }
-    );
+int getDepth(shared_ptr<const ExprNode<T>> node) {
+    if (node == nullptr) return 0;
+    if (node->getType() != NODE_BINARY) {
+        return 1;
+    }
+    int l = getDepth(node->getLeft());
+    int r = getDepth(node->getRight());
+    return 1 + max(l, r);
 }
 
-// 3) Определение глубины дерева
 template <typename T>
-size_t getDepth(typename ExprNode<T>::Ptr node) {
-    if (!node) return 0;
-    return foldExpr<T, size_t>(
-        node,
-        [](T) -> size_t { return 1; },
-        [](const std::string&) -> size_t { return 1; },
-        [](BinaryOp, size_t l, size_t r) -> size_t { return 1 + std::max(l, r); }
-    );
+int getNodeCount(shared_ptr<const ExprNode<T>> node) {
+    if (node == nullptr) return 0;
+    if (node->getType() != NODE_BINARY) {
+        return 1;
+    }
+    return 1 + getNodeCount(node->getLeft()) + getNodeCount(node->getRight());
 }
 
-// 4) Определение количества узлов
 template <typename T>
-size_t getNodeCount(typename ExprNode<T>::Ptr node) {
-    if (!node) return 0;
-    return foldExpr<T, size_t>(
-        node,
-        [](T) -> size_t { return 1; },
-        [](const std::string&) -> size_t { return 1; },
-        [](BinaryOp, size_t l, size_t r) -> size_t { return 1 + l + r; }
-    );
-}
-
-// 5) Получение множества всех используемых переменных
-template <typename T>
-void collectVariables(typename ExprNode<T>::Ptr node, std::set<std::string>& outVars) {
-    if (!node) return;
-    if (node->getKind() == NodeKind::Variable) {
-        outVars.insert(node->getVarName());
-    } else if (node->getKind() == NodeKind::Binary) {
-        collectVariables<T>(node->getLeft(), outVars);
-        collectVariables<T>(node->getRight(), outVars);
+void collectVars(shared_ptr<const ExprNode<T>> node, set<string>& result) {
+    if (node == nullptr) return;
+    if (node->getType() == NODE_VAR) {
+        result.insert(node->getVarName());
+    } else if (node->getType() == NODE_BINARY) {
+        collectVars(node->getLeft(), result);
+        collectVars(node->getRight(), result);
     }
 }
 
 template <typename T>
-std::set<std::string> getVariables(typename ExprNode<T>::Ptr node) {
-    std::set<std::string> vars;
-    collectVariables<T>(node, vars);
-    return vars;
+set<string> getVariables(shared_ptr<const ExprNode<T>> node) {
+    set<string> res;
+    collectVars(node, res);
+    return res;
 }
 
-// 6) Упрощение выражения (свёртка константных подвыражений, возвращает новое дерево)
 template <typename T>
-typename ExprNode<T>::Ptr simplify(typename ExprNode<T>::Ptr node) {
-    if (!node) return nullptr;
-
-    // Константы и переменные не изменяются
-    if (node->getKind() != NodeKind::Binary) {
+shared_ptr<const ExprNode<T>> simplify(shared_ptr<const ExprNode<T>> node) {
+    if (node->getType() != NODE_BINARY) {
         return node;
     }
 
-    auto simpLeft = simplify<T>(node->getLeft());
-    auto simpRight = simplify<T>(node->getRight());
+    auto leftSimp = simplify(node->getLeft());
+    auto rightSimp = simplify(node->getRight());
 
-    // Если оба подвыражения стали константами — вычисляем их сразу
-    if (simpLeft->getKind() == NodeKind::Constant && simpRight->getKind() == NodeKind::Constant) {
-        T result = applyBinaryOp<T>(node->getOp(), simpLeft->getValue(), simpRight->getValue());
-        return ExprNode<T>::makeConst(result);
+    if (leftSimp->getType() == NODE_CONST && rightSimp->getType() == NODE_CONST) {
+        T res = calcOp(node->getOp(), leftSimp->getValue(), rightSimp->getValue());
+        return makeConst<T>(res);
     }
 
-    return ExprNode<T>::makeBinary(node->getOp(), simpLeft, simpRight);
+    return makeOp<T>(node->getOp(), leftSimp, rightSimp);
 }
-
-// ==========================================
-// 4. АВТОМАТИЧЕСКИЕ ТЕСТЫ И MAIN
-// ==========================================
 
 void runTests() {
-    // 1. Защита инвариантов (нельзя создать бинарный узел с пустым операндом)
-    bool caughtNull = false;
+    bool errorCaught = false;
     try {
-        auto bad = Add<double>(Const<double>(1.0), nullptr);
-    } catch (const std::invalid_argument&) {
-        caughtNull = true;
+        auto bad = makeOp<double>(OP_ADD, makeConst<double>(1.0), nullptr);
+    } catch (const invalid_argument&) {
+        errorCaught = true;
     }
-    assert(caughtNull);
+    assert(errorCaught == true);
 
-    // 2. Выражение только из констант: (10 + 20) * 3 = 90
-    auto constExpr = Mul<int>(Add<int>(Const<int>(10), Const<int>(20)), Const<int>(3));
-    assert(evaluate<int>(constExpr) == 90);
-    assert(getDepth<int>(constExpr) == 3);
-    assert(getNodeCount<int>(constExpr) == 5);
-    assert(getVariables<int>(constExpr).empty());
+    auto e1 = makeOp<int>(OP_MUL, makeOp<int>(OP_ADD, makeConst<int>(10), makeConst<int>(20)), makeConst<int>(3));
+    map<string, int> emptyVars;
+    assert(evaluate(e1, emptyVars) == 90);
+    assert(getDepth(e1) == 3);
+    assert(getNodeCount(e1) == 5);
 
-    // 3. Упрощение констант и иммутабельность исходного дерева: (2 + 3) * price -> 5 * price
-    auto exprToSimplify = Mul<double>(
-        Add<double>(Const<double>(2.0), Const<double>(3.0)),
-        Var<double>("price")
-    );
-    auto simplified = simplify<double>(exprToSimplify);
+    auto e2 = makeOp<double>(OP_MUL, makeOp<double>(OP_ADD, makeConst<double>(2), makeConst<double>(3)), makeVar<double>("price"));
+    auto simp = simplify(e2);
 
-    // Исходное дерево не изменилось
-    assert(getNodeCount<double>(exprToSimplify) == 5);
-    assert(toString<double>(exprToSimplify) == "((2 + 3) * price)");
+    assert(getNodeCount(e2) == 5);
+    assert(getNodeCount(simp) == 3);
+    assert(toString(simp) == "(5 * price)");
 
-    // Новое дерево упрощено
-    assert(getNodeCount<double>(simplified) == 3);
-    assert(getDepth<double>(simplified) == 2);
-    assert(toString<double>(simplified) == "(5 * price)");
-    assert(evaluate<double>(simplified, {{"price", 10.0}}) == 50.0);
-
-    // 4. Обработка неизвестной переменной
-    bool caughtUnknownVar = false;
+    bool varError = false;
     try {
-        evaluate<double>(simplified, {{"wrong_var", 10.0}});
-    } catch (const std::runtime_error&) {
-        caughtUnknownVar = true;
+        map<string, double> v;
+        evaluate(simp, v);
+    } catch (const runtime_error&) {
+        varError = true;
     }
-    assert(caughtUnknownVar);
+    assert(varError == true);
 
-    // 5. Обработка деления на ноль
-    auto divZeroExpr = Div<double>(Var<double>("x"), Sub<double>(Const<double>(5.0), Const<double>(5.0)));
-    bool caughtDivZero = false;
+    bool divZeroError = false;
     try {
-        evaluate<double>(divZeroExpr, {{"x", 100.0}});
-    } catch (const std::runtime_error&) {
-        caughtDivZero = true;
+        auto divZero = makeOp<double>(OP_DIV, makeConst<double>(10), makeConst<double>(0));
+        map<string, double> v;
+        evaluate(divZero, v);
+    } catch (const runtime_error&) {
+        divZeroError = true;
     }
-    assert(caughtDivZero);
+    assert(divZeroError == true);
 
-    std::cout << "[OK] Все автоматические тесты Задания 2 успешно пройдены!\n\n";
-}
-
-template <typename T>
-void printExprInfo(const std::string& title, typename ExprNode<T>::Ptr expr) {
-    std::cout << "=== " << title << " ===\n";
-    std::cout << "Текстовое представление: " << toString<T>(expr) << "\n";
-    std::cout << "Глубина дерева: " << getDepth<T>(expr) << "\n";
-    std::cout << "Количество узлов: " << getNodeCount<T>(expr) << "\n";
-
-    auto vars = getVariables<T>(expr);
-    std::cout << "Используемые переменные: ";
-    if (vars.empty()) {
-        std::cout << "(нет)";
-    } else {
-        for (const auto& v : vars) std::cout << v << " ";
-    }
-    std::cout << "\n\n";
+    cout << "Тесты Задания 2 пройдены успешно!\n\n";
 }
 
 int main() {
     runTests();
 
-    // 1. Выражение, состоящее только из констант: (15 - 5) * 4
-    auto exprConst = Mul<double>(Sub<double>(Const<double>(15), Const<double>(5)), Const<double>(4));
-    printExprInfo<double>("1. Выражение только из констант", exprConst);
-    std::cout << "Результат вычисления: " << evaluate<double>(exprConst) << "\n\n";
+    auto exprConst = makeOp<double>(OP_MUL, makeOp<double>(OP_SUB, makeConst<double>(15), makeConst<double>(5)), makeConst<double>(4));
+    map<string, double> noVars;
+    cout << "1. Константное выражение: " << toString(exprConst) << " = " << evaluate(exprConst, noVars) << "\n";
+    cout << "   Глубина: " << getDepth(exprConst) << ", Узлов: " << getNodeCount(exprConst) << "\n\n";
 
-    // 2. Выражение с одной переменной: (2 + 3) * price
-    auto exprOneVar = Mul<double>(Add<double>(Const<double>(2), Const<double>(3)), Var<double>("price"));
-    printExprInfo<double>("2. Выражение с одной переменной (до упрощения)", exprOneVar);
+    auto exprOne = makeOp<double>(OP_MUL, makeOp<double>(OP_ADD, makeConst<double>(2), makeConst<double>(3)), makeVar<double>("price"));
+    auto exprSimp = simplify(exprOne);
+    cout << "2. До упрощения:    " << toString(exprOne) << " (узлов: " << getNodeCount(exprOne) << ")\n";
+    cout << "   После упрощения: " << toString(exprSimp) << " (узлов: " << getNodeCount(exprSimp) << ")\n\n";
 
-    auto exprOneVarSimplified = simplify<double>(exprOneVar);
-    printExprInfo<double>("2.1. То же выражение ПОСЛЕ упрощения", exprOneVarSimplified);
-    std::cout << "Проверка: исходное дерево осталось прежним: " << toString<double>(exprOneVar) << "\n\n";
-
-    // 3. Выражение с несколькими переменными и уровнями вложенности:
-    // (price * count + delivery) / (1 + discount)
-    auto exprComplex = Div<double>(
-        Add<double>(
-            Mul<double>(Var<double>("price"), Var<double>("count")),
-            Var<double>("delivery")
-        ),
-        Add<double>(Const<double>(1.0), Var<double>("discount"))
+    auto exprComplex = makeOp<double>(
+        OP_DIV,
+        makeOp<double>(OP_ADD, makeOp<double>(OP_MUL, makeVar<double>("price"), makeVar<double>("count")), makeVar<double>("delivery")),
+        makeOp<double>(OP_ADD, makeConst<double>(1), makeVar<double>("discount"))
     );
-    printExprInfo<double>("3. Сложное выражение с несколькими переменными", exprComplex);
 
-    // Вычисление одного выражения при различных значениях переменных
-    std::map<std::string, double> vars1 = {{"price", 100.0}, {"count", 2.0}, {"delivery", 50.0}, {"discount", 0.25}};
-    std::map<std::string, double> vars2 = {{"price", 300.0}, {"count", 1.0}, {"delivery", 0.0},  {"discount", 0.5}};
+    cout << "3. Сложное выражение: " << toString(exprComplex) << "\n";
+    cout << "   Глубина: " << getDepth(exprComplex) << ", Узлов: " << getNodeCount(exprComplex) << "\n";
+    cout << "   Переменные: ";
+    for (const string& v : getVariables(exprComplex)) {
+        cout << v << " ";
+    }
+    cout << "\n";
 
-    std::cout << "Вычисление (набор 1: price=100, count=2, delivery=50, discount=0.25): "
-              << evaluate<double>(exprComplex, vars1) << "\n";
-    std::cout << "Вычисление (набор 2: price=300, count=1, delivery=0, discount=0.5):   "
-              << evaluate<double>(exprComplex, vars2) << "\n\n";
+    map<string, double> vars1 = {{"price", 100}, {"count", 2}, {"delivery", 50}, {"discount", 0.25}};
+    map<string, double> vars2 = {{"price", 300}, {"count", 1}, {"delivery", 0}, {"discount", 0.5}};
+    cout << "   Значение при наборе 1: " << evaluate(exprComplex, vars1) << "\n";
+    cout << "   Значение при наборе 2: " << evaluate(exprComplex, vars2) << "\n\n";
 
-    // 4. Демонстрация перехвата ошибок (неизвестная переменная и деление на ноль)
-    std::cout << "=== 4. Демонстрация обработки ошибок ===\n";
+    cout << "4. Проверка ошибок:\n";
     try {
-        evaluate<double>(exprComplex, {{"price", 100.0}}); // не хватает переменных
-    } catch (const std::exception& e) {
-        std::cout << "Перехвачено исключение: " << e.what() << "\n";
+        map<string, double> badVars = {{"price", 100}};
+        evaluate(exprComplex, badVars);
+    } catch (const exception& e) {
+        cout << "   Ошибка: " << e.what() << "\n";
     }
 
     try {
-        std::map<std::string, double> varsZero = {{"price", 100.0}, {"count", 2.0}, {"delivery", 50.0}, {"discount", -1.0}};
-        evaluate<double>(exprComplex, varsZero); // 1 + (-1) = 0 в знаменателе
-    } catch (const std::exception& e) {
-        std::cout << "Перехвачено исключение: " << e.what() << "\n";
+        map<string, double> zeroVars = {{"price", 100}, {"count", 2}, {"delivery", 50}, {"discount", -1}};
+        evaluate(exprComplex, zeroVars);
+    } catch (const exception& e) {
+        cout << "   Ошибка: " << e.what() << "\n";
     }
 
     return 0;

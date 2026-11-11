@@ -1,504 +1,290 @@
 #include <iostream>
-#include <vector>
 #include <string>
 #include <memory>
-#include <cassert>
+#include <map>
+#include <set>
+#include <sstream>
 #include <stdexcept>
+#include <cassert>
+#include <algorithm>
 
-// ==========================================
-// 1. ИММУТАБЕЛЬНЫЕ ГЕОМЕТРИЧЕСКИЕ ТИПЫ
-// ==========================================
+using namespace std;
 
-class Vector2D {
-private:
-    int dx_;
-    int dy_;
-
-public:
-    Vector2D(int dx = 0, int dy = 0) : dx_(dx), dy_(dy) {}
-
-    int getDx() const { return dx_; }
-    int getDy() const { return dy_; }
-
-    Vector2D operator+(const Vector2D& other) const {
-        return Vector2D(dx_ + other.dx_, dy_ + other.dy_);
-    }
-
-    Vector2D operator-(const Vector2D& other) const {
-        return Vector2D(dx_ - other.dx_, dy_ - other.dy_);
-    }
-
-    bool operator==(const Vector2D& other) const {
-        return dx_ == other.dx_ && dy_ == other.dy_;
-    }
-
-    bool operator!=(const Vector2D& other) const {
-        return !(*this == other);
-    }
+enum NodeType {
+    NODE_CONST,
+    NODE_VAR,
+    NODE_BINARY
 };
 
-class Point2D {
-private:
-    int x_;
-    int y_;
-
-public:
-    Point2D(int x = 0, int y = 0) : x_(x), y_(y) {}
-
-    int getX() const { return x_; }
-    int getY() const { return y_; }
-
-    Point2D operator+(const Vector2D& vec) const {
-        return Point2D(x_ + vec.getDx(), y_ + vec.getDy());
-    }
-
-    Vector2D operator-(const Point2D& other) const {
-        return Vector2D(x_ - other.x_, y_ - other.y_);
-    }
-
-    bool operator==(const Point2D& other) const {
-        return x_ == other.x_ && y_ == other.y_;
-    }
-
-    bool operator!=(const Point2D& other) const {
-        return !(*this == other);
-    }
+enum OpType {
+    OP_ADD,
+    OP_SUB,
+    OP_MUL,
+    OP_DIV
 };
 
-class Rect {
+template <typename T>
+class ExprNode {
 private:
-    Point2D topLeft_;
-    Vector2D size_; // dx - ширина, dy - высота
+    NodeType type;
+    T value;
+    string varName;
+    OpType op;
+    shared_ptr<const ExprNode<T>> left;
+    shared_ptr<const ExprNode<T>> right;
 
 public:
-    Rect(Point2D topLeft, Vector2D size) : topLeft_(topLeft), size_(size) {
-        if (size.getDx() < 0 || size.getDy() < 0) {
-            throw std::invalid_argument("Размер прямоугольника не может быть отрицательным");
+    ExprNode(T val) {
+        type = NODE_CONST;
+        value = val;
+        op = OP_ADD;
+    }
+
+    ExprNode(string name) {
+        if (name.empty()) {
+            throw invalid_argument("Empty variable name");
         }
+        type = NODE_VAR;
+        value = T();
+        varName = name;
+        op = OP_ADD;
     }
 
-    Point2D getPosition() const { return topLeft_; }
-    Vector2D getSize() const { return size_; }
-    int getWidth() const { return size_.getDx(); }
-    int getHeight() const { return size_.getDy(); }
-
-    bool contains(const Point2D& p) const {
-        return p.getX() >= topLeft_.getX() &&
-               p.getX() < topLeft_.getX() + size_.getDx() &&
-               p.getY() >= topLeft_.getY() &&
-               p.getY() < topLeft_.getY() + size_.getDy();
+    ExprNode(OpType operation, shared_ptr<const ExprNode<T>> l, shared_ptr<const ExprNode<T>> r) {
+        if (l == nullptr || r == nullptr) {
+            throw invalid_argument("Binary operation requires two non-null operands");
+        }
+        type = NODE_BINARY;
+        value = T();
+        op = operation;
+        left = l;
+        right = r;
     }
 
-    bool operator==(const Rect& other) const {
-        return topLeft_ == other.topLeft_ && size_ == other.size_;
-    }
-
-    bool operator!=(const Rect& other) const {
-        return !(*this == other);
-    }
+    NodeType getType() const { return type; }
+    T getValue() const { return value; }
+    string getVarName() const { return varName; }
+    OpType getOp() const { return op; }
+    shared_ptr<const ExprNode<T>> getLeft() const { return left; }
+    shared_ptr<const ExprNode<T>> getRight() const { return right; }
 };
 
-// ==========================================
-// 2. ИЕРАРХИЯ ЭЛЕМЕНТОВ ИНТЕРФЕЙСА
-// ==========================================
+template <typename T>
+shared_ptr<const ExprNode<T>> makeConst(T val) {
+    return make_shared<const ExprNode<T>>(val);
+}
 
-class UIElement {
-private:
-    Point2D position_;
-    Vector2D size_;
-    bool enabled_;
+template <typename T>
+shared_ptr<const ExprNode<T>> makeVar(string name) {
+    return make_shared<const ExprNode<T>>(name);
+}
 
-protected:
-    // Вызывается только если элемент enabled
-    virtual void onClickAction() = 0;
+template <typename T>
+shared_ptr<const ExprNode<T>> makeOp(OpType op, shared_ptr<const ExprNode<T>> l, shared_ptr<const ExprNode<T>> r) {
+    return make_shared<const ExprNode<T>>(op, l, r);
+}
 
-public:
-    UIElement(Point2D pos, Vector2D size, bool enabled = true)
-        : position_(pos), size_(size), enabled_(enabled) {}
-
-    virtual ~UIElement() = default;
-
-    Rect getBounds() const {
-        return Rect(position_, size_);
-    }
-
-    bool containsPoint(const Point2D& p) const {
-        return getBounds().contains(p);
-    }
-
-    bool isEnabled() const { return enabled_; }
-    void setEnabled(bool enabled) { enabled_ = enabled; }
-
-    // Шаблонный метод обработки нажатия
-    void onClick() {
-        if (enabled_) {
-            onClickAction();
+template <typename T>
+T calcOp(OpType op, T a, T b) {
+    if (op == OP_ADD) return a + b;
+    if (op == OP_SUB) return a - b;
+    if (op == OP_MUL) return a * b;
+    if (op == OP_DIV) {
+        if (b == T(0)) {
+            throw runtime_error("Division by zero");
         }
+        return a / b;
     }
+    throw logic_error("Unknown operation");
+}
 
-    // Полиморфное определение возможности фокуса (без if/dynamic_cast в форме)
-    virtual bool canFocus() const {
-        return false;
+string opSymbol(OpType op) {
+    if (op == OP_ADD) return "+";
+    if (op == OP_SUB) return "-";
+    if (op == OP_MUL) return "*";
+    if (op == OP_DIV) return "/";
+    return "?";
+}
+
+template <typename T>
+T evaluate(shared_ptr<const ExprNode<T>> node, const map<string, T>& vars) {
+    if (node->getType() == NODE_CONST) {
+        return node->getValue();
     }
-
-    // Полиморфная обработка ввода текста
-    virtual void onTextInput(const std::string& text) {
-        // По умолчанию элементы игнорируют ввод текста
-        (void)text;
-    }
-
-    virtual std::string getTextRepresentation() const = 0;
-};
-
-// Кнопка
-class Button : public UIElement {
-private:
-    std::string label_;
-    int clickCount_;
-
-protected:
-    void onClickAction() override {
-        clickCount_++;
-    }
-
-public:
-    Button(Point2D pos, Vector2D size, const std::string& label, bool enabled = true)
-        : UIElement(pos, size, enabled), label_(label), clickCount_(0) {}
-
-    int getClickCount() const { return clickCount_; }
-
-    std::string getTextRepresentation() const override {
-        return label_ + ":" + std::to_string(clickCount_);
-    }
-};
-
-// Флажок (CheckBox)
-class CheckBox : public UIElement {
-private:
-    std::string label_;
-    bool checked_;
-
-protected:
-    void onClickAction() override {
-        checked_ = !checked_;
-    }
-
-public:
-    CheckBox(Point2D pos, Vector2D size, const std::string& label, bool checked = false, bool enabled = true)
-        : UIElement(pos, size, enabled), label_(label), checked_(checked) {}
-
-    bool isChecked() const { return checked_; }
-
-    std::string getTextRepresentation() const override {
-        return std::string(checked_ ? "[x] " : "[ ] ") + label_;
-    }
-};
-
-// Текстовое поле (TextField)
-class TextField : public UIElement {
-private:
-    std::string text_;
-
-protected:
-    void onClickAction() override {
-        // Само получение фокуса координируется формой через canFocus()
-    }
-
-public:
-    TextField(Point2D pos, Vector2D size, const std::string& initialText = "", bool enabled = true)
-        : UIElement(pos, size, enabled), text_(initialText) {}
-
-    bool canFocus() const override {
-        return isEnabled();
-    }
-
-    void onTextInput(const std::string& text) override {
-        if (isEnabled()) {
-            text_ = text;
+    if (node->getType() == NODE_VAR) {
+        string name = node->getVarName();
+        if (vars.find(name) == vars.end()) {
+            throw runtime_error("Unknown variable: " + name);
         }
+        return vars.at(name);
     }
 
-    std::string getText() const { return text_; }
+    T leftVal = evaluate(node->getLeft(), vars);
+    T rightVal = evaluate(node->getRight(), vars);
+    return calcOp(node->getOp(), leftVal, rightVal);
+}
 
-    std::string getTextRepresentation() const override {
-        return text_;
+template <typename T>
+string toString(shared_ptr<const ExprNode<T>> node) {
+    if (node->getType() == NODE_CONST) {
+        ostringstream ss;
+        ss << node->getValue();
+        return ss.str();
     }
-};
-
-// ==========================================
-// 3. КЛАСС ФОРМЫ
-// ==========================================
-
-class Form {
-private:
-    std::vector<std::shared_ptr<UIElement>> elements_;
-    int focusedIndex_; // -1, если фокуса нет
-
-    // Единый механизм поиска верхнего элемента под точкой (с учётом наложения)
-    int findTopElementIndexAt(const Point2D& p) const {
-        for (int i = static_cast<int>(elements_.size()) - 1; i >= 0; --i) {
-            if (elements_[i]->containsPoint(p)) {
-                return i;
-            }
-        }
-        return -1;
+    if (node->getType() == NODE_VAR) {
+        return node->getVarName();
     }
 
-public:
-    Form() : focusedIndex_(-1) {}
+    string l = toString(node->getLeft());
+    string r = toString(node->getRight());
+    return "(" + l + " " + opSymbol(node->getOp()) + " " + r + ")";
+}
 
-    void addElement(std::shared_ptr<UIElement> elem) {
-        if (elem) {
-            elements_.push_back(elem);
-        }
+template <typename T>
+int getDepth(shared_ptr<const ExprNode<T>> node) {
+    if (node == nullptr) return 0;
+    if (node->getType() != NODE_BINARY) {
+        return 1;
+    }
+    int l = getDepth(node->getLeft());
+    int r = getDepth(node->getRight());
+    return 1 + max(l, r);
+}
+
+template <typename T>
+int getNodeCount(shared_ptr<const ExprNode<T>> node) {
+    if (node == nullptr) return 0;
+    if (node->getType() != NODE_BINARY) {
+        return 1;
+    }
+    return 1 + getNodeCount(node->getLeft()) + getNodeCount(node->getRight());
+}
+
+template <typename T>
+void collectVars(shared_ptr<const ExprNode<T>> node, set<string>& result) {
+    if (node == nullptr) return;
+    if (node->getType() == NODE_VAR) {
+        result.insert(node->getVarName());
+    } else if (node->getType() == NODE_BINARY) {
+        collectVars(node->getLeft(), result);
+        collectVars(node->getRight(), result);
+    }
+}
+
+template <typename T>
+set<string> getVariables(shared_ptr<const ExprNode<T>> node) {
+    set<string> res;
+    collectVars(node, res);
+    return res;
+}
+
+template <typename T>
+shared_ptr<const ExprNode<T>> simplify(shared_ptr<const ExprNode<T>> node) {
+    if (node->getType() != NODE_BINARY) {
+        return node;
     }
 
-    void removeElement(std::shared_ptr<UIElement> elem) {
-        for (size_t i = 0; i < elements_.size(); ++i) {
-            if (elements_[i] == elem) {
-                elements_.erase(elements_.begin() + i);
-                if (focusedIndex_ == static_cast<int>(i)) {
-                    focusedIndex_ = -1;
-                } else if (focusedIndex_ > static_cast<int>(i)) {
-                    focusedIndex_--;
-                }
-                return;
-            }
-        }
+    auto leftSimp = simplify(node->getLeft());
+    auto rightSimp = simplify(node->getRight());
+
+    if (leftSimp->getType() == NODE_CONST && rightSimp->getType() == NODE_CONST) {
+        T res = calcOp(node->getOp(), leftSimp->getValue(), rightSimp->getValue());
+        return makeConst<T>(res);
     }
 
-    void setElementEnabled(std::shared_ptr<UIElement> elem, bool enabled) {
-        for (size_t i = 0; i < elements_.size(); ++i) {
-            if (elements_[i] == elem) {
-                elements_[i]->setEnabled(enabled);
-                // Disabled элемент не может удерживать фокус
-                if (!enabled && focusedIndex_ == static_cast<int>(i)) {
-                    focusedIndex_ = -1;
-                }
-                return;
-            }
-        }
-    }
-
-    // Определение верхнего элемента под точкой
-    std::shared_ptr<UIElement> getElementAt(const Point2D& p) const {
-        int idx = findTopElementIndexAt(p);
-        if (idx != -1) {
-            return elements_[idx];
-        }
-        return nullptr;
-    }
-
-    // Обработка нажатия по координатам (использует тот же findTopElementIndexAt)
-    void clickAt(const Point2D& p) {
-        int idx = findTopElementIndexAt(p);
-        if (idx == -1) return;
-
-        auto elem = elements_[idx];
-        if (!elem->isEnabled()) {
-            return; // Нажатие на disabled не меняет состояние и фокус
-        }
-
-        elem->onClick();
-
-        if (elem->canFocus()) {
-            focusedIndex_ = idx;
-        }
-    }
-
-    // Передача текстового ввода элементу в фокусе
-    void sendTextInput(const std::string& text) {
-        if (focusedIndex_ != -1 && focusedIndex_ < static_cast<int>(elements_.size())) {
-            elements_[focusedIndex_]->onTextInput(text);
-        }
-    }
-
-    // Перевод фокуса на следующий доступный элемент по кругу
-    void focusNext() {
-        if (elements_.empty()) return;
-
-        int n = static_cast<int>(elements_.size());
-        int start = (focusedIndex_ == -1) ? 0 : (focusedIndex_ + 1) % n;
-
-        for (int step = 0; step < n; ++step) {
-            int idx = (start + step) % n;
-            // Проверяем полиморфно без проверки конкретного типа
-            if (elements_[idx]->isEnabled() && elements_[idx]->canFocus()) {
-                focusedIndex_ = idx;
-                return;
-            }
-        }
-        focusedIndex_ = -1;
-    }
-
-    std::shared_ptr<UIElement> getFocusedElement() const {
-        if (focusedIndex_ != -1 && focusedIndex_ < static_cast<int>(elements_.size())) {
-            return elements_[focusedIndex_];
-        }
-        return nullptr;
-    }
-
-    // Отрисовка формы в консоль
-    void render(int canvasWidth, int canvasHeight) const {
-        std::vector<std::string> canvas(canvasHeight, std::string(canvasWidth, ' '));
-
-        for (size_t i = 0; i < elements_.size(); ++i) {
-            Rect r = elements_[i]->getBounds();
-            int x0 = r.getPosition().getX();
-            int y0 = r.getPosition().getY();
-            int w = r.getWidth();
-            int h = r.getHeight();
-            bool hasFocus = (static_cast<int>(i) == focusedIndex_);
-
-            if (w < 2 || h < 2) continue;
-
-            // Отрисовка фона и рамок элемента
-            for (int y = y0; y < y0 + h && y < canvasHeight; ++y) {
-                if (y < 0) continue;
-                for (int x = x0; x < x0 + w && x < canvasWidth; ++x) {
-                    if (x < 0) continue;
-
-                    bool isTopOrBottom = (y == y0 || y == y0 + h - 1);
-                    bool isLeftOrRight = (x == x0 || x == x0 + w - 1);
-
-                    if (hasFocus) {
-                        if (isTopOrBottom || isLeftOrRight) canvas[y][x] = '#';
-                        else canvas[y][x] = ' ';
-                    } else {
-                        if (isTopOrBottom && isLeftOrRight) canvas[y][x] = '+';
-                        else if (isTopOrBottom) canvas[y][x] = '-';
-                        else if (isLeftOrRight) canvas[y][x] = '|';
-                        else canvas[y][x] = ' ';
-                    }
-                }
-            }
-
-            // Вывод текста по центру высоты внутри рамки
-            std::string text = elements_[i]->getTextRepresentation();
-            int textY = y0 + h / 2;
-            int textX = x0 + 1;
-            if (textY > y0 && textY < y0 + h - 1 && textY >= 0 && textY < canvasHeight) {
-                for (size_t c = 0; c < text.size(); ++c) {
-                    int curX = textX + static_cast<int>(c);
-                    if (curX < x0 + w - 1 && curX >= 0 && curX < canvasWidth) {
-                        canvas[textY][curX] = text[c];
-                    }
-                }
-            }
-        }
-
-        for (const auto& line : canvas) {
-            std::cout << line << "\n";
-        }
-    }
-};
-
-// ==========================================
-// 4. АВТОМАТИЧЕСКИЕ ТЕСТЫ И MAIN
-// ==========================================
+    return makeOp<T>(node->getOp(), leftSimp, rightSimp);
+}
 
 void runTests() {
-    // 1. Тест геометрии и операторов
-    Point2D p1(2, 3);
-    Vector2D v1(5, 7);
-    Point2D p2 = p1 + v1;
-    assert(p2 == Point2D(7, 10));
-    assert((p2 - p1) == v1);
-    assert(p1 != p2);
+    bool errorCaught = false;
+    try {
+        auto bad = makeOp<double>(OP_ADD, makeConst<double>(1.0), nullptr);
+    } catch (const invalid_argument&) {
+        errorCaught = true;
+    }
+    assert(errorCaught == true);
 
-    Vector2D v2(1, 2);
-    assert((v1 + v2) == Vector2D(6, 9));
-    assert((v1 - v2) == Vector2D(4, 5));
+    auto e1 = makeOp<int>(OP_MUL, makeOp<int>(OP_ADD, makeConst<int>(10), makeConst<int>(20)), makeConst<int>(3));
+    map<string, int> emptyVars;
+    assert(evaluate(e1, emptyVars) == 90);
+    assert(getDepth(e1) == 3);
+    assert(getNodeCount(e1) == 5);
 
-    Rect rect(Point2D(0, 0), Vector2D(10, 5));
-    assert(rect.contains(Point2D(0, 0)));
-    assert(rect.contains(Point2D(9, 4)));
-    assert(!rect.contains(Point2D(10, 5))); // Правая/нижняя граница не включена
+    auto e2 = makeOp<double>(OP_MUL, makeOp<double>(OP_ADD, makeConst<double>(2), makeConst<double>(3)), makeVar<double>("price"));
+    auto simp = simplify(e2);
 
-    // 2. Тест элементов и их состояний
-    auto btn = std::make_shared<Button>(Point2D(0, 0), Vector2D(18, 5), "Button");
-    auto chk = std::make_shared<CheckBox>(Point2D(20, 0), Vector2D(18, 5), "CheckBox");
-    auto tf1 = std::make_shared<TextField>(Point2D(0, 7), Vector2D(22, 5), "");
-    auto tf2 = std::make_shared<TextField>(Point2D(24, 7), Vector2D(18, 5), "TextField");
+    assert(getNodeCount(e2) == 5);
+    assert(getNodeCount(simp) == 3);
+    assert(toString(simp) == "(5 * price)");
 
-    Form form;
-    form.addElement(btn);
-    form.addElement(chk);
-    form.addElement(tf1);
-    form.addElement(tf2);
+    bool varError = false;
+    try {
+        map<string, double> v;
+        evaluate(simp, v);
+    } catch (const runtime_error&) {
+        varError = true;
+    }
+    assert(varError == true);
 
-    // Нажатия на кнопку и чекбокс
-    form.clickAt(Point2D(2, 2));
-    assert(btn->getClickCount() == 1);
-    assert(form.getFocusedElement() == nullptr); // Кнопка не берет фокус
+    bool divZeroError = false;
+    try {
+        auto divZero = makeOp<double>(OP_DIV, makeConst<double>(10), makeConst<double>(0));
+        map<string, double> v;
+        evaluate(divZero, v);
+    } catch (const runtime_error&) {
+        divZeroError = true;
+    }
+    assert(divZeroError == true);
 
-    form.clickAt(Point2D(22, 2));
-    assert(chk->isChecked() == true);
-    form.clickAt(Point2D(22, 2));
-    assert(chk->isChecked() == false);
-
-    // Проверка disabled состояния
-    form.setElementEnabled(btn, false);
-    form.clickAt(Point2D(2, 2));
-    assert(btn->getClickCount() == 1); // Счётчик не увеличился
-    form.setElementEnabled(btn, true);
-
-    // 3. Тест фокуса и ввода текста
-    form.clickAt(Point2D(2, 8)); // Клик по первому TextField
-    assert(form.getFocusedElement() == tf1);
-    form.sendTextInput("Alice");
-    assert(tf1->getText() == "Alice");
-
-    // Переключение фокуса (должно пропустить кнопку и чекбокс и перейти на tf2)
-    form.focusNext();
-    assert(form.getFocusedElement() == tf2);
-
-    // Циклический переход обратно на tf1
-    form.focusNext();
-    assert(form.getFocusedElement() == tf1);
-
-    // Если отключить tf2, фокус должен оставаться только на tf1
-    form.setElementEnabled(tf2, false);
-    form.focusNext();
-    assert(form.getFocusedElement() == tf1);
-    form.setElementEnabled(tf2, true);
-
-    // 4. Тест порядка наложения (Z-order)
-    auto topBtn = std::make_shared<Button>(Point2D(0, 0), Vector2D(10, 5), "Top");
-    form.addElement(topBtn); // Добавлен позже поверх btn
-    assert(form.getElementAt(Point2D(2, 2)) == topBtn);
-    form.clickAt(Point2D(2, 2));
-    assert(topBtn->getClickCount() == 1);
-    assert(btn->getClickCount() == 1); // Нижняя кнопка клик не получила
-
-    form.removeElement(topBtn);
-    assert(form.getElementAt(Point2D(2, 2)) == btn);
-
-    std::cout << "[OK] Все автоматические тесты Задания 1 успешно пройдены!\n\n";
+    cout << "Тесты Задания 2 пройдены успешно!\n\n";
 }
 
 int main() {
     runTests();
 
-    // Демонстрация вывода в консоль (в точности как в примере из методички)
-    Form demoForm;
-    auto btn = std::make_shared<Button>(Point2D(0, 0), Vector2D(18, 5), "Button");
-    auto chk = std::make_shared<CheckBox>(Point2D(20, 0), Vector2D(18, 5), "CheckBox");
-    auto tfAlice = std::make_shared<TextField>(Point2D(0, 7), Vector2D(22, 5), "");
-    auto tfOther = std::make_shared<TextField>(Point2D(25, 7), Vector2D(20, 5), "TextField");
+    auto exprConst = makeOp<double>(OP_MUL, makeOp<double>(OP_SUB, makeConst<double>(15), makeConst<double>(5)), makeConst<double>(4));
+    map<string, double> noVars;
+    cout << "1. Константное выражение: " << toString(exprConst) << " = " << evaluate(exprConst, noVars) << "\n";
+    cout << "   Глубина: " << getDepth(exprConst) << ", Узлов: " << getNodeCount(exprConst) << "\n\n";
 
-    demoForm.addElement(btn);
-    demoForm.addElement(chk);
-    demoForm.addElement(tfAlice);
-    demoForm.addElement(tfOther);
+    auto exprOne = makeOp<double>(OP_MUL, makeOp<double>(OP_ADD, makeConst<double>(2), makeConst<double>(3)), makeVar<double>("price"));
+    auto exprSimp = simplify(exprOne);
+    cout << "2. До упрощения:    " << toString(exprOne) << " (узлов: " << getNodeCount(exprOne) << ")\n";
+    cout << "   После упрощения: " << toString(exprSimp) << " (узлов: " << getNodeCount(exprSimp) << ")\n\n";
 
-    demoForm.clickAt(Point2D(2, 2));  // Нажимаем Button -> Button:1
-    demoForm.clickAt(Point2D(22, 2)); // Нажимаем CheckBox -> [x] CheckBox
-    demoForm.clickAt(Point2D(2, 8));  // Фокус на первое текстовое поле
-    demoForm.sendTextInput("Alice");  // Вводим текст "Alice"
+    auto exprComplex = makeOp<double>(
+        OP_DIV,
+        makeOp<double>(OP_ADD, makeOp<double>(OP_MUL, makeVar<double>("price"), makeVar<double>("count")), makeVar<double>("delivery")),
+        makeOp<double>(OP_ADD, makeConst<double>(1), makeVar<double>("discount"))
+    );
 
-    std::cout << "Демонстрация отрисовки формы (фокус на поле Alice):\n\n";
-    demoForm.render(46, 13);
+    cout << "3. Сложное выражение: " << toString(exprComplex) << "\n";
+    cout << "   Глубина: " << getDepth(exprComplex) << ", Узлов: " << getNodeCount(exprComplex) << "\n";
+    cout << "   Переменные: ";
+    for (const string& v : getVariables(exprComplex)) {
+        cout << v << " ";
+    }
+    cout << "\n";
+
+    map<string, double> vars1 = {{"price", 100}, {"count", 2}, {"delivery", 50}, {"discount", 0.25}};
+    map<string, double> vars2 = {{"price", 300}, {"count", 1}, {"delivery", 0}, {"discount", 0.5}};
+    cout << "   Значение при наборе 1: " << evaluate(exprComplex, vars1) << "\n";
+    cout << "   Значение при наборе 2: " << evaluate(exprComplex, vars2) << "\n\n";
+
+    cout << "4. Проверка ошибок:\n";
+    try {
+        map<string, double> badVars = {{"price", 100}};
+        evaluate(exprComplex, badVars);
+    } catch (const exception& e) {
+        cout << "   Ошибка: " << e.what() << "\n";
+    }
+
+    try {
+        map<string, double> zeroVars = {{"price", 100}, {"count", 2}, {"delivery", 50}, {"discount", -1}};
+        evaluate(exprComplex, zeroVars);
+    } catch (const exception& e) {
+        cout << "   Ошибка: " << e.what() << "\n";
+    }
 
     return 0;
 }
